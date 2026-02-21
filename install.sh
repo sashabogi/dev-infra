@@ -15,24 +15,30 @@ INSTALL_DIR="$HOME/.dev-infra"
 # Step 1: Check prerequisites
 echo "[1/7] Checking prerequisites..."
 
-# Python 3.10+
-if ! command -v python3 &>/dev/null; then
-    echo "ERROR: python3 not found. Install Python 3.10+ first."
+# Python 3.10+ — try versioned binaries first, then fall back to python3
+PYTHON=""
+for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" &>/dev/null; then
+        ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        major=$(echo "$ver" | cut -d. -f1)
+        minor=$(echo "$ver" | cut -d. -f2)
+        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+            PYTHON="$candidate"
+            PYTHON_VERSION="$ver"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: Python 3.10+ required. Found only $(python3 --version 2>/dev/null || echo 'no python3')."
+    echo "  Install with: brew install python@3.12"
     exit 1
 fi
-
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
-PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
-
-if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]; }; then
-    echo "ERROR: Python 3.10+ required (found $PYTHON_VERSION)"
-    exit 1
-fi
-echo "  Python $PYTHON_VERSION OK"
+echo "  Python $PYTHON_VERSION ($PYTHON) OK"
 
 # pip
-if ! python3 -m pip --version &>/dev/null; then
+if ! $PYTHON -m pip --version &>/dev/null; then
     echo "ERROR: pip not found. Install with: python3 -m ensurepip"
     exit 1
 fi
@@ -53,29 +59,36 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/hooks"
 mkdir -p "$INSTALL_DIR/logs"
 
-# Step 3: Install Python package
+# Step 3: Create venv and install Python package
 echo ""
 echo "[3/7] Installing Python package..."
-cd "$REPO_DIR"
-python3 -m pip install -e . --quiet 2>&1 | tail -3
+VENV_DIR="$INSTALL_DIR/venv"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "  Creating virtual environment..."
+    $PYTHON -m venv "$VENV_DIR"
+fi
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
 
-# Verify CLI installed
+cd "$REPO_DIR"
+"$VENV_PIP" install -e . --quiet 2>&1 | tail -3
+
+# Create a wrapper script in ~/.local/bin so `dev-infra` is on PATH
+WRAPPER_DIR="$HOME/.local/bin"
+mkdir -p "$WRAPPER_DIR"
+cat > "$WRAPPER_DIR/dev-infra" << WRAPPER
+#!/bin/bash
+exec "$VENV_DIR/bin/dev-infra" "\$@"
+WRAPPER
+chmod +x "$WRAPPER_DIR/dev-infra"
+
 if command -v dev-infra &>/dev/null; then
     echo "  dev-infra CLI OK"
 else
-    # Check common pip install locations
-    for candidate in "$HOME/.local/bin/dev-infra" "$HOME/Library/Python/$PYTHON_VERSION/bin/dev-infra"; do
-        if [ -f "$candidate" ]; then
-            echo "  dev-infra CLI installed at $candidate"
-            echo "  WARNING: $candidate is not in your PATH"
-            echo "  Add this to your shell profile:"
-            echo "    export PATH=\"$(dirname "$candidate"):\$PATH\""
-            break
-        fi
-    done
-    if ! command -v dev-infra &>/dev/null; then
-        echo "  WARNING: dev-infra CLI not found in PATH. You may need to add ~/.local/bin to your PATH"
-    fi
+    echo "  dev-infra CLI installed at $WRAPPER_DIR/dev-infra"
+    echo "  WARNING: $WRAPPER_DIR is not in your PATH"
+    echo "  Add this to your shell profile:"
+    echo "    export PATH=\"$WRAPPER_DIR:\$PATH\""
 fi
 
 # Step 4: Copy config
