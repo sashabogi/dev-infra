@@ -1,7 +1,8 @@
 #!/bin/bash
 # Safety gate — blocks destructive shell commands before execution
 #
-# Event:   PreToolCall
+# Event:   PreToolUse (matcher: Bash)
+# Input:   {"tool_name": "Bash", "tool_input": {"command": "..."}}
 # Purpose: Inspects Bash tool calls for dangerous patterns (recursive
 #          deletes on system dirs, fork bombs, pipe-to-shell, etc.)
 #          and blocks them with exit code 2.

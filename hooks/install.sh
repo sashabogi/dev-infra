@@ -3,7 +3,14 @@
 #
 # This script is idempotent — safe to run multiple times.
 # It copies hook scripts to ~/.dev-infra/hooks/ and merges
-# the hook configuration into ~/.claude/hooks.json.
+# the hook configuration into ~/.claude/settings.json under the
+# "hooks" key using the correct Claude Code format:
+#
+#   hooks: {
+#     PreToolUse: [ { matcher: "Bash", hooks: [{ type: "command", command: "..." }] } ],
+#     PostToolUse: [ { matcher: "Bash", hooks: [{ type: "command", command: "..." }] } ],
+#     Stop: [ { hooks: [{ type: "command", command: "..." }] } ]
+#   }
 #
 # Usage:
 #   bash /path/to/dev-infra/hooks/install.sh
@@ -12,15 +19,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/.dev-infra/hooks"
-CLAUDE_HOOKS_DIR="$HOME/.claude"
-CLAUDE_HOOKS_FILE="$CLAUDE_HOOKS_DIR/hooks.json"
+CLAUDE_SETTINGS_FILE="$HOME/.claude/settings.json"
 
 echo "Installing dev-infra hooks..."
 echo ""
 
 # ── 1. Create directories ────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
-mkdir -p "$CLAUDE_HOOKS_DIR"
+mkdir -p "$HOME/.claude"
 
 # ── 2. Copy hook scripts and helper ──────────────────────────────────
 SCRIPTS=(
@@ -43,76 +49,124 @@ done
 # ── 3. Make shell scripts executable ─────────────────────────────────
 chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
 
-# ── 4. Merge hooks.json into Claude Code configuration ───────────────
-if [ ! -f "$SCRIPT_DIR/hooks.json" ]; then
-    echo "ERROR: hooks.json not found in $SCRIPT_DIR"
-    exit 1
-fi
+# ── 4. Merge hooks into ~/.claude/settings.json ─────────────────────
+# Uses the correct Claude Code hook format with PreToolUse/PostToolUse/Stop
+# events. Preserves all existing hooks (RTK, etc.) by only touching entries
+# whose command contains ".dev-infra".
 
-if [ -f "$CLAUDE_HOOKS_FILE" ]; then
-    echo ""
-    echo "  Existing hooks.json found — merging dev-infra hooks..."
-    python3 -c "
+python3 << 'PYTHON_SCRIPT'
 import json
+import os
+import sys
 
-with open('$CLAUDE_HOOKS_FILE') as f:
-    existing = json.load(f)
+settings_file = os.path.expanduser("~/.claude/settings.json")
+install_dir = os.path.expanduser("~/.dev-infra/hooks")
 
-with open('$SCRIPT_DIR/hooks.json') as f:
-    new_hooks = json.load(f)
+# Load existing settings
+if os.path.exists(settings_file):
+    with open(settings_file) as f:
+        settings = json.load(f)
+else:
+    settings = {}
 
-# Remove any previous dev-infra hooks (identified by .dev-infra in command)
-existing_hooks = existing.get('hooks', [])
-filtered = [h for h in existing_hooks if '.dev-infra' not in h.get('command', '')]
+# Ensure hooks object exists
+if "hooks" not in settings:
+    settings["hooks"] = {}
 
-# Append the new dev-infra hooks
-new_entries = new_hooks.get('hooks', [])
-filtered.extend(new_entries)
-existing['hooks'] = filtered
+hooks = settings["hooks"]
 
-with open('$CLAUDE_HOOKS_FILE', 'w') as f:
-    json.dump(existing, f, indent=2)
-    f.write('\n')
+# Dev-infra hooks to install
+DEV_INFRA_HOOKS = {
+    "PreToolUse": {
+        "matcher": "Bash",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"bash {install_dir}/pre-tool-safety.sh"
+            }
+        ]
+    },
+    "PostToolUse": {
+        "matcher": "Bash",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"bash {install_dir}/post-compaction.sh"
+            }
+        ]
+    },
+    "Stop": {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"bash {install_dir}/session-end.sh"
+            }
+        ]
+    }
+}
 
-print(f'  Merged {len(new_entries)} dev-infra hooks ({len(filtered)} total hooks)')
-"
-else
-    echo ""
-    echo "  Creating new hooks.json..."
-    python3 -c "
-import json
+installed_count = 0
 
-with open('$SCRIPT_DIR/hooks.json') as f:
-    hooks = json.load(f)
+for event_name, new_entry in DEV_INFRA_HOOKS.items():
+    # Ensure the event array exists
+    if event_name not in hooks:
+        hooks[event_name] = []
 
-with open('$CLAUDE_HOOKS_FILE', 'w') as f:
-    json.dump(hooks, f, indent=2)
-    f.write('\n')
+    event_list = hooks[event_name]
 
-print(f'  Created hooks.json with {len(hooks.get(\"hooks\", []))} hooks')
-"
-fi
+    # Remove any existing dev-infra entries (idempotent)
+    filtered = []
+    for entry in event_list:
+        is_dev_infra = False
+        for h in entry.get("hooks", []):
+            if ".dev-infra" in h.get("command", ""):
+                is_dev_infra = True
+                break
+        if not is_dev_infra:
+            filtered.append(entry)
+
+    # Append the new dev-infra entry
+    filtered.append(new_entry)
+    hooks[event_name] = filtered
+    installed_count += 1
+
+settings["hooks"] = hooks
+
+with open(settings_file, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+
+print(f"  Merged {installed_count} dev-infra hooks into settings.json")
+PYTHON_SCRIPT
 
 # ── 5. Verify installation ───────────────────────────────────────────
 echo ""
 INSTALLED_COUNT=$(ls "$INSTALL_DIR"/*.sh 2>/dev/null | wc -l | tr -d ' ')
 HOOK_COUNT=$(python3 -c "
-import json
-with open('$CLAUDE_HOOKS_FILE') as f:
+import json, os
+with open(os.path.expanduser('~/.claude/settings.json')) as f:
     d = json.load(f)
-infra = [h for h in d.get('hooks', []) if '.dev-infra' in h.get('command', '')]
-print(len(infra))
+hooks = d.get('hooks', {})
+count = 0
+for event_name, entries in hooks.items():
+    if not isinstance(entries, list):
+        continue
+    for entry in entries:
+        for h in entry.get('hooks', []):
+            if '.dev-infra' in h.get('command', ''):
+                count += 1
+print(count)
 " 2>/dev/null || echo "?")
 
 echo "Installation complete!"
 echo ""
 echo "  Scripts installed: $INSTALL_DIR/ ($INSTALLED_COUNT shell scripts)"
-echo "  Hooks configured:  $CLAUDE_HOOKS_FILE ($HOOK_COUNT dev-infra hooks)"
+echo "  Hooks configured:  $CLAUDE_SETTINGS_FILE ($HOOK_COUNT dev-infra hooks)"
 echo ""
 echo "  Active hooks:"
-echo "    PreToolCall  -> Safety gate (blocks destructive commands)"
-echo "    PostToolCall -> Memory rescue (extracts context on compaction)"
-echo "    Stop         -> Session checkpoint (saves context on exit)"
+echo "    PreToolUse  -> Safety gate (blocks destructive commands)"
+echo "    PostToolUse -> Memory rescue (extracts context on compaction)"
+echo "    Stop        -> Session checkpoint (saves context on exit)"
 echo ""
 echo "  Manual tools:"
 echo "    bash $INSTALL_DIR/session-start.sh   # Load rescued memories"

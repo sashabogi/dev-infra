@@ -1,12 +1,13 @@
 #!/bin/bash
 # Memory Rescue — extract facts/decisions/skills before compaction destroys them
 #
-# Event:   PostToolCall
+# Event:   PostToolUse (matcher: Bash)
+# Input:   {"tool_name": "...", "tool_input": {...}, "tool_response": "..."}
 # Purpose: Detects context compaction tool calls and dispatches the rescued
 #          text to the dev-infra Memory Rescue endpoint via rescue_helper.py.
 #
 # Exit codes:
-#   0 — always (PostToolCall hooks cannot block; we just observe)
+#   0 — always (PostToolUse hooks cannot block; we just observe)
 
 set -euo pipefail
 

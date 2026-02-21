@@ -2,6 +2,7 @@
 # Auto-checkpoint on session end — extracts remaining context before exit
 #
 # Event:   Stop
+# Input:   {"session_id": "...", "transcript": "..."}
 # Purpose: When a Claude Code session ends, the hook payload may contain
 #          a final summary or conversation state. We send it through
 #          Memory Rescue to capture any last facts/decisions/skills.
