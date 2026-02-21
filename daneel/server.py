@@ -8,13 +8,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import time
+
+import httpx
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from daneel.costs import CostRecord, CostTracker
-from daneel.router import Router, anthropic_to_openai_messages
+from daneel.quality_gate import QualityResult, score_response
+from daneel.router import Router, RoutingResult, anthropic_to_openai_messages
+from daneel.safety import scrub_credentials
 
 logger = logging.getLogger("daneel.server")
 
@@ -150,6 +155,10 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     model = body.get("model")
 
+    # Seldon role-aware headers
+    seldon_role = request.headers.get("X-Seldon-Role")
+    target_provider = request.headers.get("X-Provider")
+
     kwargs: dict[str, Any] = {}
     for k in ("temperature", "max_tokens", "top_p", "stop"):
         if k in body:
@@ -159,8 +168,16 @@ async def chat_completions(request: Request):
         messages=messages,
         model=model,
         target_format="openai",
+        role=seldon_role,
+        target_provider=target_provider,
         **kwargs,
     )
+
+    # Handle unknown provider — forward directly
+    if result.status == "unknown_provider" and target_provider:
+        result = await _forward_unknown_provider(
+            body, target_provider, seldon_role, "openai",
+        )
 
     # Track quality stats
     if result.quality.passed:
@@ -181,6 +198,7 @@ async def chat_completions(request: Request):
             quality_score=result.quality.score,
             latency_ms=int(result.latency_ms),
             status=result.status,
+            role=result.role,
         )
     )
 
@@ -200,6 +218,10 @@ async def anthropic_messages(request: Request):
     messages = body.get("messages", [])
     model = body.get("model")
     system = body.get("system")
+
+    # Seldon role-aware headers
+    seldon_role = request.headers.get("X-Seldon-Role")
+    target_provider = request.headers.get("X-Provider")
 
     # Transform Anthropic format to OpenAI format
     openai_messages = anthropic_to_openai_messages(messages)
@@ -235,8 +257,16 @@ async def anthropic_messages(request: Request):
         messages=openai_messages,
         model=model,
         target_format="anthropic",
+        role=seldon_role,
+        target_provider=target_provider,
         **kwargs,
     )
+
+    # Handle unknown provider — forward directly
+    if result.status == "unknown_provider" and target_provider:
+        result = await _forward_unknown_provider(
+            body, target_provider, seldon_role, "anthropic",
+        )
 
     # Track quality stats
     if result.quality.passed:
@@ -257,6 +287,7 @@ async def anthropic_messages(request: Request):
             quality_score=result.quality.score,
             latency_ms=int(result.latency_ms),
             status=result.status,
+            role=result.role,
         )
     )
 
@@ -264,6 +295,142 @@ async def anthropic_messages(request: Request):
         return JSONResponse(status_code=502, content=result.response)
 
     return result.response
+
+
+async def _forward_unknown_provider(
+    body: dict,
+    provider_name: str,
+    role: str | None,
+    target_format: str,
+) -> RoutingResult:
+    """Forward a request to a provider not in Daneel's config.
+
+    Seldon may call providers Daneel doesn't know about.  We still apply
+    quality gating but skip circuit breaking (no health tracking).
+    Cost is tracked at $0 since we don't know the rate.
+    """
+    # Try to resolve from seldon_integration.extra_providers in config
+    extra = _config.get("seldon_integration", {}).get("extra_providers", {})
+    pconfig = extra.get(provider_name, {})
+
+    endpoint = pconfig.get("endpoint") or body.get("endpoint")
+    if not endpoint:
+        logger.warning(
+            "Unknown provider '%s' with no endpoint in config or request body",
+            provider_name,
+        )
+        return RoutingResult(
+            provider=provider_name,
+            model=body.get("model", "unknown"),
+            response={"error": {"message": f"No endpoint for unknown provider '{provider_name}'", "type": "server_error", "code": 502}},
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            quality=QualityResult(score=0.0, passed=False),
+            latency_ms=0.0,
+            status="failed",
+            error=f"No endpoint for provider '{provider_name}'",
+            role=role,
+        )
+
+    # Resolve API key
+    key_env = pconfig.get("api_key_env", "")
+    api_key = os.environ.get(key_env, "") if key_env else ""
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    model = body.get("model") or pconfig.get("model", "unknown")
+    quality_threshold = _config.get("quality_gate", {}).get("threshold", 0.5)
+
+    logger.warning(
+        "Forwarding to unknown provider '%s' (role=%s, model=%s, endpoint=%s)",
+        provider_name,
+        role,
+        model,
+        endpoint,
+    )
+
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Strip non-standard fields before forwarding
+            forward_body = {k: v for k, v in body.items() if k != "endpoint"}
+            resp = await client.post(endpoint, json=forward_body, headers=headers)
+        latency_ms = (time.monotonic() - start) * 1000
+
+        if resp.status_code != 200:
+            return RoutingResult(
+                provider=provider_name,
+                model=model,
+                response={},
+                tokens_in=0,
+                tokens_out=0,
+                cost_usd=0.0,
+                quality=QualityResult(score=0.0, passed=False),
+                latency_ms=latency_ms,
+                status="failed",
+                error=f"HTTP {resp.status_code}: {resp.text[:500]}",
+                role=role,
+            )
+
+        data = resp.json()
+
+        # Extract and quality-gate the response
+        choices = data.get("choices", [])
+        response_text = ""
+        if choices:
+            msg = choices[0].get("message", {})
+            response_text = msg.get("content", "") or ""
+
+        quality = score_response(response_text, quality_threshold)
+
+        # Scrub credentials
+        scrubbed, was_scrubbed = scrub_credentials(response_text)
+        if was_scrubbed and choices and "message" in choices[0]:
+            data["choices"][0]["message"]["content"] = scrubbed
+
+        # Calculate cost from extra_providers config (or $0)
+        usage = data.get("usage", {})
+        tokens_in = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+        tokens_out = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+        cost_config = pconfig.get("cost_per_million", {})
+        cost = round(
+            (tokens_in / 1_000_000) * cost_config.get("input", 0)
+            + (tokens_out / 1_000_000) * cost_config.get("output", 0),
+            8,
+        )
+
+        return RoutingResult(
+            provider=provider_name,
+            model=model,
+            response=data,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost,
+            quality=quality,
+            latency_ms=latency_ms,
+            status="success" if quality.passed else "rejected",
+            role=role,
+        )
+
+    except Exception as exc:
+        latency_ms = (time.monotonic() - start) * 1000
+        logger.exception("Unknown provider '%s' error", provider_name)
+        return RoutingResult(
+            provider=provider_name,
+            model=model,
+            response={},
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            quality=QualityResult(score=0.0, passed=False),
+            latency_ms=latency_ms,
+            status="failed",
+            error=str(exc),
+            role=role,
+        )
 
 
 def create_app() -> FastAPI:

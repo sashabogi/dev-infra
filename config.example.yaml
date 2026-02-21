@@ -62,3 +62,35 @@ rescue:
 costs:
   rolling_window_hours: 24
   db_path: "~/.dev-infra/costs.db"
+
+# Role-aware routing (Seldon integration)
+# When requests include X-Seldon-Role and X-Provider headers,
+# Daneel respects the provider choice instead of cost-routing.
+# Quality gate and cost tracking still apply.
+seldon_integration:
+  enabled: true
+  # Additional providers Seldon might use that aren't in the failover chain.
+  # These won't be cost-routed to, but Daneel will track costs when
+  # Seldon explicitly requests them via X-Provider header.
+  extra_providers:
+    anthropic:
+      endpoint: "https://api.anthropic.com/v1/messages"
+      api_key_env: "ANTHROPIC_API_KEY"
+      model: "claude-opus-4"
+      cost_per_million:
+        input: 15.00
+        output: 75.00
+    openai:
+      endpoint: "https://api.openai.com/v1/chat/completions"
+      api_key_env: "OPENAI_API_KEY"
+      model: "gpt-4o"
+      cost_per_million:
+        input: 2.50
+        output: 10.00
+    google:
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+      api_key_env: "GOOGLE_API_KEY"
+      model: "gemini-2.5-pro"
+      cost_per_million:
+        input: 1.25
+        output: 10.00

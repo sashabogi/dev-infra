@@ -20,6 +20,7 @@ class CostRecord:
     quality_score: float
     latency_ms: int
     status: str
+    role: str | None = None
 
 
 # Estimated Opus 4 pricing per million tokens
@@ -51,7 +52,8 @@ def _ensure_db(db: Path) -> sqlite3.Connection:
             cost_usd REAL NOT NULL,
             quality_score REAL NOT NULL,
             latency_ms INTEGER NOT NULL,
-            status TEXT NOT NULL
+            status TEXT NOT NULL,
+            role TEXT
         )
     """)
     conn.execute("""
@@ -59,6 +61,14 @@ def _ensure_db(db: Path) -> sqlite3.Connection:
     """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_costs_provider ON costs(provider)
+    """)
+    # Migration: add role column to existing databases
+    try:
+        conn.execute("ALTER TABLE costs ADD COLUMN role TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_costs_role ON costs(role)
     """)
     conn.commit()
     return conn
@@ -73,8 +83,8 @@ class CostTracker:
         self._conn.execute(
             """INSERT INTO costs
                (id, timestamp, provider, model, tokens_in, tokens_out,
-                cost_usd, quality_score, latency_ms, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cost_usd, quality_score, latency_ms, status, role)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(uuid.uuid4()),
                 time.time(),
@@ -86,6 +96,7 @@ class CostTracker:
                 rec.quality_score,
                 rec.latency_ms,
                 rec.status,
+                rec.role,
             ),
         )
         self._conn.commit()
@@ -139,7 +150,31 @@ class CostTracker:
         opus_cost = (total_in / 1_000_000) * OPUS_COST_PER_M_INPUT + \
                     (total_out / 1_000_000) * OPUS_COST_PER_M_OUTPUT
 
-        return {
+        # Per-role breakdown (only includes requests with a role set)
+        role_rows = self._conn.execute(
+            """SELECT role,
+                      COUNT(*) as requests,
+                      SUM(cost_usd) as total_cost,
+                      SUM(tokens_in) as total_in,
+                      SUM(tokens_out) as total_out
+               FROM costs
+               WHERE timestamp > ? AND role IS NOT NULL
+               GROUP BY role
+               ORDER BY total_cost DESC""",
+            (cutoff,),
+        ).fetchall()
+
+        roles: dict[str, dict] = {}
+        for rrow in role_rows:
+            r_name, r_requests, r_cost, r_in, r_out = rrow
+            roles[r_name] = {
+                "requests": r_requests,
+                "cost_usd": round(r_cost, 6),
+                "tokens_in": r_in,
+                "tokens_out": r_out,
+            }
+
+        result = {
             "window_hours": hours,
             "providers": providers,
             "total_cost_usd": round(total_cost, 6),
@@ -149,6 +184,9 @@ class CostTracker:
                 ((opus_cost - total_cost) / opus_cost * 100) if opus_cost > 0 else 0, 1
             ),
         }
+        if roles:
+            result["roles"] = roles
+        return result
 
     def get_total_saved(self) -> dict:
         row = self._conn.execute(

@@ -77,6 +77,7 @@ class RoutingResult:
     latency_ms: float
     status: str  # success | failed | rejected
     error: str | None = None
+    role: str | None = None
 
 
 class Router:
@@ -113,9 +114,16 @@ class Router:
         messages: list[dict],
         model: str | None = None,
         target_format: str = "openai",
+        role: str | None = None,
+        target_provider: str | None = None,
         **kwargs: Any,
     ) -> RoutingResult:
-        """Route a request through the failover chain."""
+        """Route a request through the failover chain.
+
+        When target_provider is set (Seldon passthrough mode), bypass the
+        failover chain and call the specified provider directly.  Quality
+        gate, credential scrubbing, and cost tracking still apply.
+        """
         # Safety check
         safety = check_safety(messages)
         if not safety.safe:
@@ -134,7 +142,70 @@ class Router:
                 latency_ms=0.0,
                 status="blocked",
                 error="Safety block",
+                role=role,
             )
+
+        # --- Seldon passthrough mode ---
+        if target_provider:
+            if target_provider not in self._providers:
+                # Unknown provider — caller (server.py) handles forwarding
+                return RoutingResult(
+                    provider=target_provider,
+                    model=model or "unknown",
+                    response=_error_response(
+                        f"Provider '{target_provider}' not in Daneel config",
+                        target_format,
+                    ),
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost_usd=0.0,
+                    quality=QualityResult(score=0.0, passed=False),
+                    latency_ms=0.0,
+                    status="unknown_provider",
+                    error=f"Provider '{target_provider}' not configured",
+                    role=role,
+                )
+
+            health = self._health.get(target_provider)
+            if health and not health.is_available:
+                logger.warning(
+                    "Role-directed request (role=%s) to %s blocked: "
+                    "circuit breaker open",
+                    role,
+                    target_provider,
+                )
+                return RoutingResult(
+                    provider=target_provider,
+                    model=self._providers[target_provider].get("model", "unknown"),
+                    response=_error_response(
+                        f"Provider '{target_provider}' circuit breaker is open. "
+                        f"Role-directed requests do not failover.",
+                        target_format,
+                    ),
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost_usd=0.0,
+                    quality=QualityResult(score=0.0, passed=False),
+                    latency_ms=0.0,
+                    status="failed",
+                    error=f"{target_provider}: circuit breaker open (role-directed)",
+                    role=role,
+                )
+
+            logger.info(
+                "Role-directed request: role=%s provider=%s model=%s",
+                role,
+                target_provider,
+                model or self._providers[target_provider].get("model"),
+            )
+            result = await self._try_provider(
+                target_provider, messages, target_format,
+                model_override=model, **kwargs,
+            )
+            result.role = role
+            return result
+
+        # --- Default mode: cost-route through failover chain ---
 
         # If explicit model is requested, try to find matching provider
         if model:
@@ -144,6 +215,7 @@ class Router:
                         name, messages, target_format, **kwargs
                     )
                     if result.status == "success":
+                        result.role = role
                         return result
                     break
 
@@ -162,6 +234,7 @@ class Router:
                 provider_name, messages, target_format, **kwargs
             )
             if result.status == "success":
+                result.role = role
                 return result
 
             errors.append(f"{provider_name}: {result.error}")
@@ -180,6 +253,7 @@ class Router:
             latency_ms=0.0,
             status="failed",
             error="; ".join(errors),
+            role=role,
         )
 
     async def _try_provider(
@@ -187,12 +261,13 @@ class Router:
         provider_name: str,
         messages: list[dict],
         target_format: str,
+        model_override: str | None = None,
         **kwargs: Any,
     ) -> RoutingResult:
         """Attempt a single provider call."""
         pconfig = self._providers[provider_name]
         health = self._health[provider_name]
-        model = pconfig["model"]
+        model = model_override or pconfig["model"]
 
         # Build the OpenAI-format request body
         body: dict[str, Any] = {
