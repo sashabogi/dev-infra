@@ -1,0 +1,19 @@
+{
+  "hooks": [
+    {
+      "event": "PreToolCall",
+      "command": "bash $HOME/.dev-infra/hooks/pre-tool-safety.sh",
+      "timeout": 5000
+    },
+    {
+      "event": "PostToolCall",
+      "command": "bash $HOME/.dev-infra/hooks/post-compaction.sh",
+      "timeout": 10000
+    },
+    {
+      "event": "Stop",
+      "command": "bash $HOME/.dev-infra/hooks/session-end.sh",
+      "timeout": 15000
+    }
+  ]
+}

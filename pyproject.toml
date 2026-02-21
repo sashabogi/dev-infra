@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dev-infra"
+version = "0.1.0"
+description = "Daneel inference proxy + memory rescue engine"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+dev-infra = "cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["daneel*", "rescue*", "cli*"]

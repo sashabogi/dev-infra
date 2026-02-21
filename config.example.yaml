@@ -1,0 +1,64 @@
+daneel:
+  host: "0.0.0.0"
+  port: 8889
+
+providers:
+  deepseek:
+    endpoint: "https://api.deepseek.com/v1/chat/completions"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model: "deepseek-chat"
+    role: primary_background
+    cost_per_million:
+      input: 0.14
+      output: 0.28
+
+  minimax:
+    endpoint: "https://api.minimax.chat/v1/text/chatcompletion_v2"
+    api_key_env: "MINIMAX_API_KEY"
+    model: "MiniMax-Text-01"
+    role: bulk_tasks
+    cost_per_million:
+      input: 0.30
+      output: 2.40
+
+  cerebras:
+    endpoint: "https://api.cerebras.ai/v1/chat/completions"
+    api_key_env: "CEREBRAS_API_KEY"
+    model: "llama-3.3-70b"
+    role: compaction
+    cost_per_million:
+      input: 0.60
+      output: 0.60
+
+  ollama:
+    endpoint: "http://localhost:11434/v1/chat/completions"
+    api_key_env: ""
+    model: "qwen2.5-coder:7b"
+    role: fallback
+    cost_per_million:
+      input: 0
+      output: 0
+
+quality_gate:
+  threshold: 0.5
+  checks:
+    - xml_hallucination
+    - formatting_violation
+    - prompt_injection
+  on_failure: reject
+
+failover_chain:
+  - deepseek
+  - minimax
+  - cerebras
+  - ollama
+
+rescue:
+  extraction_model: cerebras
+  importance_threshold: 7
+  db_path: "~/.dev-infra/memory.db"
+  max_context_chars: 100000
+
+costs:
+  rolling_window_hours: 24
+  db_path: "~/.dev-infra/costs.db"
