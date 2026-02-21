@@ -253,9 +253,11 @@ def _port_available(port: int) -> bool:
 
 
 def _load_existing_keys() -> dict[str, str]:
-    """Load existing API keys from ~/.dev-infra/.env"""
+    """Load existing API keys from ~/.dev-infra/.env, filtering out placeholders."""
     env_path = CONFIG_DIR / ".env"
     keys = {}
+    # Common placeholder patterns from .env.example files
+    placeholders = {"your_", "put_", "sk-xxx", "replace", "changeme", "todo", "fixme", "example"}
     if env_path.exists():
         try:
             with open(env_path) as f:
@@ -263,7 +265,15 @@ def _load_existing_keys() -> dict[str, str]:
                     line = line.strip()
                     if "=" in line and not line.startswith("#"):
                         k, v = line.split("=", 1)
-                        keys[k.strip()] = v.strip()
+                        v = v.strip()
+                        # Skip empty values and obvious placeholders
+                        if not v:
+                            continue
+                        if any(v.lower().startswith(p) for p in placeholders):
+                            continue
+                        if "_here" in v.lower() or "_key_here" in v.lower():
+                            continue
+                        keys[k.strip()] = v
         except Exception:
             pass
     return keys
