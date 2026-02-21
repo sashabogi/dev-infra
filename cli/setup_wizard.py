@@ -406,9 +406,16 @@ def step_providers(existing_keys: dict[str, str] | None = None) -> tuple[dict[st
                     }
                     api_keys[name] = key
         else:
-            # Ollama — no key needed
+            # Ollama — no key needed, check via /api/tags (model-independent)
             print(f"  Checking if Ollama is running...", end="", flush=True)
-            ok, msg = _test_provider(prov["endpoint"], prov["model"], None)
+            try:
+                resp = httpx.get("http://localhost:11434/api/tags", timeout=5.0)
+                ok = resp.status_code == 200
+                msg = "Connection successful" if ok else f"HTTP {resp.status_code}"
+            except httpx.ConnectError:
+                ok, msg = False, "Connection refused (Ollama not running?)"
+            except Exception as exc:
+                ok, msg = False, str(exc)[:120]
             print("\r" + " " * 60 + "\r", end="")
 
             if ok:
@@ -528,7 +535,7 @@ def step_quality_gate() -> dict:
             questionary.Choice("reject  — return error to caller", value="reject"),
             questionary.Choice("skip    — pass through unvalidated", value="skip"),
         ],
-        default="reject  — return error to caller",
+        default="reject",
         style=WIZARD_STYLE,
     ).ask()
     if on_failure is None:
