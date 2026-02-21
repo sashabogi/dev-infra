@@ -13,9 +13,9 @@ providers:
       output: 0.28
 
   kimi:
-    endpoint: "https://api.moonshot.cn/v1/chat/completions"
+    endpoint: "https://api.moonshot.ai/v1/chat/completions"
     api_key_env: "KIMI_API_KEY"
-    model: "moonshot-v1-8k"
+    model: "kimi-k2-turbo-preview"
     role: secondary
     cost_per_million:
       input: 0.60

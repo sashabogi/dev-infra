@@ -68,11 +68,21 @@ PROVIDERS = [
         "name": "kimi",
         "label": "Kimi (Moonshot)",
         "role": "secondary",
-        "endpoint": "https://api.moonshot.cn/v1/chat/completions",
-        "model": "kimi-k2-0711-preview",
+        "endpoint": "https://api.moonshot.ai/v1/chat/completions",
+        "model": "kimi-k2-turbo-preview",
         "needs_key": True,
         "cost_per_million": {"input": 0.60, "output": 0.60},
-        "description": "Strong reasoning, cheap — good secondary",
+        "description": "International key from platform.moonshot.ai",
+        "known_models": [
+            "kimi-k2.5",
+            "kimi-k2-turbo-preview",
+            "kimi-k2-thinking-turbo",
+            "kimi-k2-thinking",
+            "kimi-k2-0905-preview",
+            "moonshot-v1-128k",
+            "moonshot-v1-32k",
+            "moonshot-v1-8k",
+        ],
     },
     {
         "name": "openrouter",
@@ -354,6 +364,12 @@ def step_providers(existing_keys: dict[str, str] | None = None) -> tuple[dict[st
             print(f"  Fetching models...", end="", flush=True)
             available_models = _list_provider_models(prov["endpoint"], key)
             print("\r" + " " * 40 + "\r", end="")  # clear line
+
+            # Merge with known_models if provider defines them
+            known = prov.get("known_models", [])
+            if known:
+                merged = list(dict.fromkeys(known + available_models))  # dedupe, known first
+                available_models = merged
 
             if available_models:
                 # Add "custom" option at the end
