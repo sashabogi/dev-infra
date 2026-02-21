@@ -275,6 +275,13 @@ def cmd_rescue(args: argparse.Namespace) -> None:
         print(f"  [{m.importance}/10] {m.category}/{m.subcategory}: {m.content[:100]}")
 
 
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Run interactive setup wizard."""
+    from cli.setup_wizard import run_wizard
+
+    run_wizard()
+
+
 def cmd_stats(args: argparse.Namespace) -> None:
     """Show memory database statistics."""
     load_dotenv()
@@ -335,6 +342,7 @@ def main() -> None:
     rescue_parser.add_argument("--project", "-p", help="Project name")
 
     sub.add_parser("stats", help="Show memory database statistics")
+    sub.add_parser("setup", help="Interactive setup wizard")
 
     args = parser.parse_args()
 
@@ -346,6 +354,7 @@ def main() -> None:
         "search": cmd_search,
         "rescue": cmd_rescue,
         "stats": cmd_stats,
+        "setup": cmd_setup,
     }
 
     commands[args.command](args)
