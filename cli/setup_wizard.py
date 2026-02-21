@@ -252,12 +252,28 @@ def _port_available(port: int) -> bool:
             return False
 
 
+def _is_placeholder(value: str) -> bool:
+    """Detect placeholder API keys that aren't real credentials."""
+    v = value.lower().replace("-", " ").replace("_", " ")
+    # Catch: "your-key-here", "your_api_key_here", "put-key-here", "replace-me", etc.
+    placeholder_words = {"your", "here", "replace", "changeme", "todo", "fixme", "example", "placeholder", "insert", "paste"}
+    words = set(v.split())
+    # If 2+ placeholder words appear, it's almost certainly not a real key
+    if len(words & placeholder_words) >= 2:
+        return True
+    # Also catch exact short patterns
+    if v in {"your key here", "your key", "key here", "api key", "sk xxx", "test"}:
+        return True
+    # Real API keys are usually 20+ chars of alphanumeric/dash. Short values are suspicious.
+    if len(value) < 12:
+        return True
+    return False
+
+
 def _load_existing_keys() -> dict[str, str]:
     """Load existing API keys from ~/.dev-infra/.env, filtering out placeholders."""
     env_path = CONFIG_DIR / ".env"
     keys = {}
-    # Common placeholder patterns from .env.example files
-    placeholders = {"your_", "put_", "sk-xxx", "replace", "changeme", "todo", "fixme", "example"}
     if env_path.exists():
         try:
             with open(env_path) as f:
@@ -267,11 +283,7 @@ def _load_existing_keys() -> dict[str, str]:
                         k, v = line.split("=", 1)
                         v = v.strip()
                         # Skip empty values and obvious placeholders
-                        if not v:
-                            continue
-                        if any(v.lower().startswith(p) for p in placeholders):
-                            continue
-                        if "_here" in v.lower() or "_key_here" in v.lower():
+                        if not v or _is_placeholder(v):
                             continue
                         keys[k.strip()] = v
         except Exception:
