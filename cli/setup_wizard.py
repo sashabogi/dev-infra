@@ -223,6 +223,26 @@ def _list_ollama_models() -> list[str]:
     return []
 
 
+def _list_provider_models(endpoint: str, api_key: str) -> list[str]:
+    """Fetch available models from an OpenAI-compatible /v1/models endpoint."""
+    # Derive models URL from chat completions URL
+    # e.g. https://api.deepseek.com/v1/chat/completions -> https://api.deepseek.com/v1/models
+    models_url = endpoint.rsplit("/chat/completions", 1)[0]
+    if not models_url.endswith("/models"):
+        models_url = models_url.rstrip("/") + "/models"
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        resp = httpx.get(models_url, headers=headers, timeout=10.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = data.get("data", [])
+            return sorted([m["id"] for m in models if isinstance(m, dict) and "id" in m])
+    except Exception:
+        pass
+    return []
+
+
 def _port_available(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -266,15 +286,49 @@ def step_providers() -> tuple[dict[str, dict], dict[str, str]]:
                 print()
                 continue
 
-            # Let user override model
-            model = questionary.text(
-                f"  Model [{prov['model']}]:",
-                default=prov["model"],
-                style=WIZARD_STYLE,
-            ).ask()
-            if model is None:
-                raise KeyboardInterrupt
-            model = model.strip() or prov["model"]
+            # Fetch available models and let user pick
+            print(f"  Fetching models...", end="", flush=True)
+            available_models = _list_provider_models(prov["endpoint"], key)
+            print("\r" + " " * 40 + "\r", end="")  # clear line
+
+            if available_models:
+                # Add "custom" option at the end
+                default_model = prov["model"]
+                choices = list(available_models)
+                if default_model in choices:
+                    # Move default to top
+                    choices.remove(default_model)
+                    choices.insert(0, default_model)
+                choices.append("── Enter custom model ──")
+
+                model = questionary.select(
+                    f"  Pick a model ({len(available_models)} available):",
+                    choices=choices,
+                    default=choices[0],
+                    style=WIZARD_STYLE,
+                ).ask()
+                if model is None:
+                    raise KeyboardInterrupt
+
+                if model == "── Enter custom model ──":
+                    model = questionary.text(
+                        f"  Model name:",
+                        default=prov["model"],
+                        style=WIZARD_STYLE,
+                    ).ask()
+                    if model is None:
+                        raise KeyboardInterrupt
+                    model = model.strip() or prov["model"]
+            else:
+                # Fallback to text input if models endpoint not available
+                model = questionary.text(
+                    f"  Model [{prov['model']}]:",
+                    default=prov["model"],
+                    style=WIZARD_STYLE,
+                ).ask()
+                if model is None:
+                    raise KeyboardInterrupt
+                model = model.strip() or prov["model"]
 
             # Test connection
             print(f"  Testing {label}...", end="", flush=True)
