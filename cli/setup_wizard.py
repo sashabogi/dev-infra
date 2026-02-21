@@ -86,13 +86,13 @@ PROVIDERS = [
     },
     {
         "name": "zai",
-        "label": "Z.ai",
+        "label": "Z.ai (Zhipu)",
         "role": "bulk_tasks",
         "endpoint": "https://api.zai.chat/v1/chat/completions",
-        "model": "zai-r1",
+        "model": "glm-4-flash",
         "needs_key": True,
-        "cost_per_million": {"input": 0.50, "output": 0.50},
-        "description": "Budget reasoning model",
+        "cost_per_million": {"input": 0.10, "output": 0.10},
+        "description": "GLM family — flash is cheapest, pick 4.7/5.0 from list",
     },
     {
         "name": "cerebras",
