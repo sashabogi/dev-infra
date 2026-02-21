@@ -252,10 +252,27 @@ def _port_available(port: int) -> bool:
             return False
 
 
+def _load_existing_keys() -> dict[str, str]:
+    """Load existing API keys from ~/.dev-infra/.env"""
+    env_path = CONFIG_DIR / ".env"
+    keys = {}
+    if env_path.exists():
+        try:
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        keys[k.strip()] = v.strip()
+        except Exception:
+            pass
+    return keys
+
+
 # ── Wizard Steps ─────────────────────────────────────────────────────────────
 
 
-def step_providers() -> tuple[dict[str, dict], dict[str, str]]:
+def step_providers(existing_keys: dict[str, str] | None = None) -> tuple[dict[str, dict], dict[str, str]]:
     """Step 1: Configure and test each provider. Returns (provider_configs, api_keys)."""
     _header(1, 6, "Provider Configuration")
 
@@ -273,13 +290,38 @@ def step_providers() -> tuple[dict[str, dict], dict[str, str]]:
             print(f"    {DIM}{desc}{RESET}")
 
         if prov["needs_key"]:
-            key = questionary.password(
-                f"  API key for {label} (Enter to skip):",
-                style=WIZARD_STYLE,
-            ).ask()
-            if key is None:
-                raise KeyboardInterrupt
-            key = key.strip()
+            env_var = f"{name.upper()}_API_KEY"
+            existing_key = (existing_keys or {}).get(env_var, "")
+
+            if existing_key:
+                # Mask the existing key for display
+                masked = existing_key[:4] + "..." + existing_key[-4:] if len(existing_key) > 12 else "****"
+                print(f"    {DIM}Existing key found: {masked}{RESET}")
+                keep_existing = questionary.confirm(
+                    f"  Keep existing key for {label}?",
+                    default=True,
+                    style=WIZARD_STYLE,
+                ).ask()
+                if keep_existing is None:
+                    raise KeyboardInterrupt
+                if keep_existing:
+                    key = existing_key
+                else:
+                    key = questionary.password(
+                        f"  New API key for {label} (Enter to skip):",
+                        style=WIZARD_STYLE,
+                    ).ask()
+                    if key is None:
+                        raise KeyboardInterrupt
+                    key = key.strip() or existing_key  # fall back to existing if blank
+            else:
+                key = questionary.password(
+                    f"  API key for {label} (Enter to skip):",
+                    style=WIZARD_STYLE,
+                ).ask()
+                if key is None:
+                    raise KeyboardInterrupt
+                key = key.strip()
 
             if not key:
                 _warn(f"{label} skipped (no API key)")
@@ -695,7 +737,8 @@ def run_wizard() -> None:
         print()
 
     try:
-        providers, api_keys = step_providers()
+        existing_keys = _load_existing_keys()
+        providers, api_keys = step_providers(existing_keys)
         failover_chain = step_failover_chain(providers)
         quality_gate = step_quality_gate()
         rescue = step_rescue(providers)
