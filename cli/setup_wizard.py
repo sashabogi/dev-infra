@@ -62,15 +62,37 @@ PROVIDERS = [
         "model": "deepseek-chat",
         "needs_key": True,
         "cost_per_million": {"input": 0.14, "output": 0.28},
+        "description": "Cheapest viable model — great for background tasks",
     },
     {
-        "name": "minimax",
-        "label": "MiniMax",
-        "role": "bulk_tasks",
-        "endpoint": "https://api.minimax.chat/v1/text/chatcompletion_v2",
-        "model": "MiniMax-Text-01",
+        "name": "kimi",
+        "label": "Kimi (Moonshot)",
+        "role": "secondary",
+        "endpoint": "https://api.moonshot.cn/v1/chat/completions",
+        "model": "kimi-k2-0711-preview",
         "needs_key": True,
-        "cost_per_million": {"input": 0.30, "output": 2.40},
+        "cost_per_million": {"input": 0.60, "output": 0.60},
+        "description": "Strong reasoning, cheap — good secondary",
+    },
+    {
+        "name": "openrouter",
+        "label": "OpenRouter",
+        "role": "bulk_tasks",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "meta-llama/llama-3.3-70b-instruct",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.40, "output": 0.40},
+        "description": "Access to 200+ models — routes to cheapest",
+    },
+    {
+        "name": "zai",
+        "label": "Z.ai",
+        "role": "bulk_tasks",
+        "endpoint": "https://api.zai.chat/v1/chat/completions",
+        "model": "zai-r1",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.50, "output": 0.50},
+        "description": "Budget reasoning model",
     },
     {
         "name": "cerebras",
@@ -80,15 +102,67 @@ PROVIDERS = [
         "model": "llama-3.3-70b",
         "needs_key": True,
         "cost_per_million": {"input": 0.60, "output": 0.60},
+        "description": "Ultra-fast inference — ideal for extraction",
+    },
+    {
+        "name": "minimax",
+        "label": "MiniMax",
+        "role": "bulk_tasks",
+        "endpoint": "https://api.minimax.chat/v1/text/chatcompletion_v2",
+        "model": "MiniMax-Text-01",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.30, "output": 2.40},
+        "description": "Cheap input, expensive output — use for short responses",
+    },
+    {
+        "name": "groq",
+        "label": "Groq",
+        "role": "compaction",
+        "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "model": "llama-3.3-70b-versatile",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.59, "output": 0.79},
+        "description": "Fast inference on Llama models",
+    },
+    {
+        "name": "together",
+        "label": "Together AI",
+        "role": "bulk_tasks",
+        "endpoint": "https://api.together.xyz/v1/chat/completions",
+        "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.88, "output": 0.88},
+        "description": "Wide model selection, competitive pricing",
+    },
+    {
+        "name": "fireworks",
+        "label": "Fireworks AI",
+        "role": "bulk_tasks",
+        "endpoint": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "model": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        "needs_key": True,
+        "cost_per_million": {"input": 0.90, "output": 0.90},
+        "description": "Fast open-source model hosting",
+    },
+    {
+        "name": "perplexity",
+        "label": "Perplexity",
+        "role": "research",
+        "endpoint": "https://api.perplexity.ai/chat/completions",
+        "model": "sonar",
+        "needs_key": True,
+        "cost_per_million": {"input": 1.00, "output": 1.00},
+        "description": "Search-augmented — use for research tasks only",
     },
     {
         "name": "ollama",
-        "label": "Ollama",
+        "label": "Ollama (local)",
         "role": "fallback",
         "endpoint": "http://localhost:11434/v1/chat/completions",
         "model": "qwen2.5-coder:7b",
         "needs_key": False,
         "cost_per_million": {"input": 0, "output": 0},
+        "description": "Free local fallback — no API key needed",
     },
 ]
 
@@ -173,7 +247,10 @@ def step_providers() -> tuple[dict[str, dict], dict[str, str]]:
         label = prov["label"]
         role = prov["role"]
 
+        desc = prov.get("description", "")
         print(f"  {BOLD}{label}{RESET} {DIM}({role}){RESET}")
+        if desc:
+            print(f"    {DIM}{desc}{RESET}")
 
         if prov["needs_key"]:
             key = questionary.password(
@@ -285,9 +362,19 @@ def step_failover_chain(configured: dict[str, dict]) -> list[str]:
     _header(2, 6, "Failover Chain")
 
     names = list(configured.keys())
-    default_order = [n for n in ["deepseek", "minimax", "cerebras", "ollama"] if n in names]
+    # Smart default: cheapest providers first, ollama always last
+    def _sort_key(name):
+        cfg = configured[name]
+        cost = cfg.get("cost_per_million", {})
+        avg_cost = (cost.get("input", 0) + cost.get("output", 0)) / 2
+        # Ollama always last (it's the offline fallback)
+        if name == "ollama":
+            return (1, 0)
+        return (0, avg_cost)
 
-    print(f"  Configured providers: {', '.join(default_order)}")
+    default_order = sorted(names, key=_sort_key)
+
+    print(f"  Configured providers: {', '.join(names)}")
     print(f"  Default chain: {' -> '.join(default_order)}")
     print()
 

@@ -12,6 +12,24 @@ providers:
       input: 0.14
       output: 0.28
 
+  kimi:
+    endpoint: "https://api.moonshot.cn/v1/chat/completions"
+    api_key_env: "KIMI_API_KEY"
+    model: "moonshot-v1-8k"
+    role: secondary
+    cost_per_million:
+      input: 0.60
+      output: 0.60
+
+  openrouter:
+    endpoint: "https://openrouter.ai/api/v1/chat/completions"
+    api_key_env: "OPENROUTER_API_KEY"
+    model: "meta-llama/llama-3.1-70b-instruct"
+    role: bulk_tasks
+    cost_per_million:
+      input: 0.40
+      output: 0.40
+
   minimax:
     endpoint: "https://api.minimax.chat/v1/text/chatcompletion_v2"
     api_key_env: "MINIMAX_API_KEY"
@@ -49,6 +67,8 @@ quality_gate:
 
 failover_chain:
   - deepseek
+  - kimi
+  - openrouter
   - minimax
   - cerebras
   - ollama
