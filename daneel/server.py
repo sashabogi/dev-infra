@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -22,6 +23,9 @@ from daneel.router import Router, RoutingResult, anthropic_to_openai_messages
 from daneel.safety import scrub_credentials
 
 logger = logging.getLogger("daneel.server")
+
+DANEEL_AUTH_TOKEN = os.environ.get("DANEEL_AUTH_TOKEN", "")
+MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Module-level state
 _config: dict = {}
@@ -70,7 +74,7 @@ async def lifespan(app: FastAPI):
     _router.set_api_keys(_resolve_api_keys(_config))
     _cost_tracker = CostTracker(_config)
 
-    host = _config.get("daneel", {}).get("host", "0.0.0.0")
+    host = _config.get("daneel", {}).get("host", "127.0.0.1")
     port = _config.get("daneel", {}).get("port", 8889)
     logger.info("Daneel proxy starting on %s:%d", host, port)
 
@@ -88,6 +92,32 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def body_size_middleware(request: Request, call_next):
+    """Reject oversized request bodies."""
+    if request.method == "POST":
+        body_bytes = await request.body()
+        if len(body_bytes) > MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413, content={"error": "Request body too large"}
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Bearer token authentication for all endpoints except /health."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    if not DANEEL_AUTH_TOKEN:
+        return await call_next(request)  # No token configured = legacy mode
+    auth = request.headers.get("authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(token, DANEEL_AUTH_TOKEN):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -138,10 +168,10 @@ async def rescue(request: Request):
         engine.close()
         return {"committed": len(committed), "count": len(committed)}
     except Exception as exc:
-        logger.exception("Rescue endpoint failed")
+        logger.exception("Rescue endpoint failed: %s", exc)
         return JSONResponse(
             status_code=500,
-            content={"error": str(exc), "committed": 0, "count": 0},
+            content={"error": "Internal processing error", "committed": 0, "count": 0},
         )
 
 
@@ -313,10 +343,10 @@ async def _forward_unknown_provider(
     extra = _config.get("seldon_integration", {}).get("extra_providers", {})
     pconfig = extra.get(provider_name, {})
 
-    endpoint = pconfig.get("endpoint") or body.get("endpoint")
+    endpoint = pconfig.get("endpoint")
     if not endpoint:
         logger.warning(
-            "Unknown provider '%s' with no endpoint in config or request body",
+            "Unknown provider '%s' with no endpoint configured",
             provider_name,
         )
         return RoutingResult(
@@ -361,6 +391,7 @@ async def _forward_unknown_provider(
         latency_ms = (time.monotonic() - start) * 1000
 
         if resp.status_code != 200:
+            error_text, _ = scrub_credentials(resp.text[:500])
             return RoutingResult(
                 provider=provider_name,
                 model=model,
@@ -371,7 +402,7 @@ async def _forward_unknown_provider(
                 quality=QualityResult(score=0.0, passed=False),
                 latency_ms=latency_ms,
                 status="failed",
-                error=f"HTTP {resp.status_code}: {resp.text[:500]}",
+                error=f"HTTP {resp.status_code}: {error_text}",
                 role=role,
             )
 
@@ -417,7 +448,7 @@ async def _forward_unknown_provider(
 
     except Exception as exc:
         latency_ms = (time.monotonic() - start) * 1000
-        logger.exception("Unknown provider '%s' error", provider_name)
+        logger.exception("Unknown provider '%s' error: %s", provider_name, exc)
         return RoutingResult(
             provider=provider_name,
             model=model,
@@ -428,7 +459,7 @@ async def _forward_unknown_provider(
             quality=QualityResult(score=0.0, passed=False),
             latency_ms=latency_ms,
             status="failed",
-            error=str(exc),
+            error=f"Provider '{provider_name}' request failed",
             role=role,
         )
 

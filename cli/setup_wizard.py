@@ -664,7 +664,7 @@ def step_daneel_port() -> dict:
     else:
         _warn(f"Port {port} is in use (Daneel may already be running — that's OK)")
 
-    return {"host": "0.0.0.0", "port": port}
+    return {"host": "127.0.0.1", "port": port}
 
 
 def step_summary_and_save(

@@ -37,7 +37,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     load_dotenv()
     config = _load_config()
 
-    host = config.get("daneel", {}).get("host", "0.0.0.0")
+    host = config.get("daneel", {}).get("host", "127.0.0.1")
     port = config.get("daneel", {}).get("port", 8889)
 
     # Find the project root (where daneel package lives)

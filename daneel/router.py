@@ -296,7 +296,7 @@ class Router:
             latency_ms = (time.monotonic() - start) * 1000
 
             if resp.status_code != 200:
-                error_text = resp.text[:500]
+                error_text, _ = scrub_credentials(resp.text[:500])
                 health.record_failure()
                 logger.warning(
                     "Provider %s returned %d: %s",
